@@ -530,6 +530,9 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 	}
 
 	protected override updateItem(pullRequestModel: PullRequestModel): Promise<void> {
+		if (this.isDisposed) {
+			return Promise.resolve();
+		}
 		this._pendingUpdate = pullRequestModel;
 		if (!this._updateItemPromise) {
 			const updateItemPromise = this.processPendingUpdates().finally(() => {
@@ -543,7 +546,7 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 	}
 
 	private async processPendingUpdates(): Promise<void> {
-		while (this._pendingUpdate) {
+		while (!this.isDisposed && this._pendingUpdate) {
 			const pullRequestModel = this._pendingUpdate;
 			this._pendingUpdate = undefined;
 			await this.updateItemNow(pullRequestModel);
@@ -592,6 +595,9 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 				currentUser,
 				viewerCanEdit,
 			] = await updatingPromise;
+			if (this.isDisposed) {
+				return;
+			}
 			const pullRequest = pullRequestModel;
 			const timelineEvents = cachedTimelineEvents;
 			const dataLoadDuration = performance.now() - updateStart;
@@ -631,6 +637,9 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 				closingIssuesPromise,
 				this.getInitialStack(pullRequest),
 			]);
+			if (this.isDisposed) {
+				return;
+			}
 			const contextDuration = performance.now() - contextStart;
 			this._canUpdateStackAccess = baseContext.hasWritePermission;
 			// Reloading the pull request keeps the recommendation that is shown, so that the page does not move,
@@ -810,7 +819,9 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 				this._folderRepositoryManager.checkBranchUpToDate(pullRequest, true);
 			}
 		} catch (e) {
-			vscode.window.showErrorMessage(`Error updating pull request description: ${formatError(e)}`);
+			if (!this.isDisposed) {
+				vscode.window.showErrorMessage(`Error updating pull request description: ${formatError(e)}`);
+			}
 		}
 	}
 
@@ -959,12 +970,15 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 	}
 
 	public override async refreshPanel(): Promise<void> {
-		if (!this._panel.visible || this._refreshing) {
+		if (this.isDisposed || !this._panel.visible || this._refreshing) {
 			return;
 		}
 		this._refreshing = true;
 		try {
 			const pullRequest = await this.resolveModel(this._identity);
+			if (this.isDisposed) {
+				return;
+			}
 			if (!pullRequest) {
 				throw new Error(
 					`Failed to resolve Pull Request #${this._identity.number} in ${this._identity.owner}/${this._identity.repo}`,
@@ -972,7 +986,9 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 			}
 			await this.updateItem(pullRequest);
 		} catch (error) {
-			vscode.window.showErrorMessage(`Error refreshing pull request description: ${formatError(error)}`);
+			if (!this.isDisposed) {
+				vscode.window.showErrorMessage(`Error refreshing pull request description: ${formatError(error)}`);
+			}
 		} finally {
 			this._refreshing = false;
 		}
@@ -1933,6 +1949,7 @@ export class PullRequestOverviewPanel extends IssueOverviewPanel<PullRequestMode
 
 	override dispose() {
 		++this._updateSequence;
+		this._pendingUpdate = undefined;
 		this._stackRefreshPending = false;
 		super.dispose();
 		disposeAll(this._prListeners);
