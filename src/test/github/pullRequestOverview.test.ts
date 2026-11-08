@@ -1681,8 +1681,113 @@ describe('PullRequestOverview', function () {
 				{ position: 2, number: 1000, title: 'Second', url: '', head: 'D2', state: GithubItemStateEnum.Open, isDraft: false, mergeable: PullRequestMergeability.Mergeable },
 			],
 		});
-		return { ...services, panel, model, stackQuery, webviewPostMessage, received, onDidPost: posted.event };
+		return { ...services, panel, model, stackQuery, webviewPanel, webviewPostMessage, received, onDidPost: posted.event };
 	}
+
+	describe('refresh disposal', function () {
+		it('does not start a refresh after the panel closes', async function () {
+			const { panel, resolvePullRequest, showError, webviewPanel } = await createPanel();
+			webviewPanel.dispose();
+
+			await panel.refreshPanel();
+
+			sinon.assert.notCalled(resolvePullRequest);
+			sinon.assert.notCalled(showError);
+		});
+
+		it('does not resume a refresh after the panel closes during model resolution', async function () {
+			const { panel, model, resolvePullRequest, showError, webviewPanel } = await createPanel();
+			let resolveModel!: (model: PullRequestModel) => void;
+			resolvePullRequest.returns(new Promise(resolve => { resolveModel = resolve; }));
+
+			const refreshing = panel.refreshPanel();
+			sinon.assert.calledOnce(resolvePullRequest);
+			webviewPanel.dispose();
+			resolveModel(model);
+			await refreshing;
+
+			sinon.assert.notCalled(showError);
+		});
+
+		for (const result of ['missing', 'failed']) {
+			it(`ignores a ${result} model lookup after the panel closes`, async function () {
+				const { panel, resolvePullRequest, showError, webviewPanel } = await createPanel();
+				let finishLookup!: () => void;
+				resolvePullRequest.returns(new Promise((resolve, reject) => {
+					finishLookup = () => result === 'missing' ? resolve(undefined) : reject(new Error('Lookup failed'));
+				}));
+
+				const refreshing = panel.refreshPanel();
+				sinon.assert.calledOnce(resolvePullRequest);
+				webviewPanel.dispose();
+				finishLookup();
+				await refreshing;
+
+				sinon.assert.notCalled(showError);
+			});
+		}
+
+		it('does not rebind model listeners after the panel closes during initialization', async function () {
+			const { panel, access, showError, webviewPanel } = await createPanel();
+			const repositoryAccess = access.firstCall.returnValue;
+			let finishAccess!: () => void;
+			let accessStarted!: () => void;
+			const started = new Promise<void>(resolve => { accessStarted = resolve; });
+			access.callsFake(() => {
+				accessStarted();
+				return new Promise(resolve => { finishAccess = () => resolve(repositoryAccess); });
+			});
+			const registerListeners = sinon.spy(panel as any, 'registerPrListeners');
+			const postMessage = sinon.spy(panel as any, '_postMessage');
+
+			const refreshing = panel.refreshPanel();
+			await started;
+			webviewPanel.dispose();
+			finishAccess();
+			await refreshing;
+
+			sinon.assert.notCalled(registerListeners);
+			sinon.assert.notCalled(postMessage);
+			sinon.assert.notCalled(showError);
+		});
+
+		it('does not publish initialization after the panel closes while preparing the webview context', async function () {
+			const { panel, showError, webviewPanel } = await createPanel();
+			let finishContext!: () => void;
+			let contextStarted!: () => void;
+			const started = new Promise<void>(resolve => { contextStarted = resolve; });
+			sinon.stub(panel as any, 'getInitializeContext').callsFake(() => {
+				contextStarted();
+				return new Promise(resolve => { finishContext = () => resolve({}); });
+			});
+			const postMessage = sinon.spy(panel as any, '_postMessage');
+
+			const refreshing = panel.refreshPanel();
+			await started;
+			webviewPanel.dispose();
+			finishContext();
+			await refreshing;
+
+			sinon.assert.notCalled(postMessage);
+			sinon.assert.notCalled(showError);
+		});
+
+		it('reports lookup failures while the panel remains open and allows a later refresh', async function () {
+			const { panel, model, resolvePullRequest, showError } = await createPanel();
+			resolvePullRequest.rejects(new Error('Lookup failed'));
+
+			await panel.refreshPanel();
+
+			sinon.assert.calledOnce(showError);
+			assert.deepStrictEqual(showError.firstCall.args, ['Error refreshing pull request description: Lookup failed']);
+			resolvePullRequest.resolves(model);
+			const postMessage = sinon.spy(panel as any, '_postMessage');
+			await panel.refreshPanel();
+
+			sinon.assert.calledWithMatch(postMessage, { command: 'pr.initialize' });
+			sinon.assert.calledOnce(showError);
+		});
+	});
 
 	describe('stack panel fixture', function () {
 		it('posts replies without depending on the renderer sending a ready message', async function () {
